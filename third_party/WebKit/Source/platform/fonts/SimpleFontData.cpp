@@ -65,7 +65,7 @@ SimpleFontData::SimpleFontData(const FontPlatformData& platformData, PassRefPtr<
 {
     platformInit();
     platformGlyphInit();
-#ifdef MINIBLINK_NOT_IMPLEMENTED
+#if 1 // def MINIBLINK_NOT_IMPLEMENTED
     if (platformData.isVerticalAnyUpright() && !isTextOrientationFallback) {
         m_verticalData = platformData.verticalData();
         m_hasVerticalGlyphs = m_verticalData.get() && m_verticalData->hasVerticalMetrics();
@@ -469,11 +469,11 @@ bool SimpleFontData::canRenderCombiningCharacterSequence(const UChar* characters
         if (!glyphForCharacter(character))
             return false;
     }
-#endif // MINIBLINK_NOT_IMPLEMENTED
-    notImplemented();
-
     addResult.storedValue->value = true;
     return true;
+#else
+    return false;
+#endif // MINIBLINK_NOT_IMPLEMENTED
 }
 
 bool SimpleFontData::fillGlyphPage(GlyphPage* pageToFill, unsigned offset, unsigned length, UChar* buffer, unsigned bufferLength) const

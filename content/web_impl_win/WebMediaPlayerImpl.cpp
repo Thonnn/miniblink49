@@ -41,8 +41,9 @@ namespace content {
 
 class MediaPlayerClientWkeWrap : public wke::WkeMediaPlayerClient {
 public:
-    MediaPlayerClientWkeWrap(blink::WebMediaPlayerClient* client)
+    MediaPlayerClientWkeWrap(blink::WebViewImpl* view, blink::WebMediaPlayerClient* client)
     {
+        m_view = view;
         m_client = client;
     }
 
@@ -134,8 +135,14 @@ public:
     virtual void connectedToRemoteDevice() {};
     virtual void disconnectedFromRemoteDevice() {};
 
+    virtual void didExitFullScreen() override
+    {
+        m_view->didExitFullScreen();
+    }
+
 private:
     blink::WebMediaPlayerClient* m_client;
+    blink::WebViewImpl* m_view;
 };
 
 // static uint16_t getNPVersion()
@@ -239,16 +246,18 @@ WebMediaPlayerImpl::WebMediaPlayerImpl(blink::WebLocalFrame* frame, const blink:
 
     plugin->load();
 
-     m_wkeClientWrap = new MediaPlayerClientWkeWrap(m_client);
+    m_wkeClientWrap = new MediaPlayerClientWkeWrap(view, m_client);
 
-    NPNetscapeFuncs browserFuncs = { 0 } ;
-    memcpy(&browserFuncs, plugin->browserFuncs(), sizeof(NPNetscapeFuncs));
-    m_wkePlayer = wke::g_wkeMediaPlayerFactory(page->wkeWebView(), m_wkeClientWrap, (void*)&browserFuncs, (void*)plugin->pluginFuncs());
+    if (1) {
+        NPNetscapeFuncs browserFuncs = { 0 };
+        memcpy(&browserFuncs, plugin->browserFuncs(), sizeof(NPNetscapeFuncs));
+        m_wkePlayer = wke::g_wkeMediaPlayerFactory(page->wkeWebView(), m_wkeClientWrap, (void*)&browserFuncs, (void*)plugin->pluginFuncs());
 
-    if (s_wkeBrowserFuncs.size != sizeof(NPNetscapeFuncs))
-        memcpy(&s_wkeBrowserFuncs, &browserFuncs, sizeof(NPNetscapeFuncs));
-
-    //m_wkePlayer = wke::g_wkeMediaPlayerFactory(page->wkeWebView(), m_wkeClientWrap, nullptr, nullptr);
+        if (s_wkeBrowserFuncs.size != sizeof(NPNetscapeFuncs))
+            memcpy(&s_wkeBrowserFuncs, &browserFuncs, sizeof(NPNetscapeFuncs));
+    } else {
+        m_wkePlayer = wke::g_wkeMediaPlayerFactory(page->wkeWebView(), m_wkeClientWrap, nullptr, nullptr);
+    }
 }
 
 WebMediaPlayerImpl::~WebMediaPlayerImpl()
@@ -551,9 +560,6 @@ void WebMediaPlayerImpl::paint(WebCanvas* canvas, const WebRect& rect, unsigned 
             delete m_memoryCanvas;
         m_size = size; // naturalSize();
         m_memoryCanvas = skia::CreatePlatformCanvas(m_size.width, m_size.height, true);
-
-        String output = String::format("WebMediaPlayerImpl::paint: %d %d\n", m_size.width, m_size.height);
-        OutputDebugStringA(output.utf8().data());
     }
 
     SkPaint clearPaint;
@@ -661,6 +667,18 @@ bool WebMediaPlayerImpl::handleMouseEvent(const blink::WebMouseEvent& evt)
 bool WebMediaPlayerImpl::handleKeyboardEvent(const blink::WebKeyboardEvent& evt)
 {
     return false;
+}
+
+void WebMediaPlayerImpl::showMediaControls()
+{
+    if (m_wkePlayer)
+        m_wkePlayer->showMediaControls();
+}
+
+void WebMediaPlayerImpl::hideMediaControls()
+{
+    if (m_wkePlayer)
+        m_wkePlayer->hideMediaControls();
 }
 
 bool WebMediaPlayerImpl::copyVideoTextureToPlatformTexture(blink::WebGraphicsContext3D* cotext, unsigned texture, unsigned internalFormat, unsigned type, bool premultiplyAlpha, bool flipY)
