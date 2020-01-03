@@ -46,8 +46,7 @@ DEFINE_DEBUG_ONLY_GLOBAL(WTF::RefCountedLeakCounter, compositingLayerCounter, ("
    
 CompositingLayer::CompositingLayer(int id)
 {
-    m_prop = new DrawToCanvasProperties();
-    //m_tiles = new Vector<CompositingTile*>();
+    m_prop = new DrawProps();
     m_tilesAddr = new TilesAddr(this);
     m_numTileX = 0;
     m_numTileY = 0;
@@ -189,7 +188,7 @@ void CompositingLayer::removeChildOrDependent(CompositingLayer* child)
     }
 }
 
-void CompositingLayer::updataDrawProp(DrawToCanvasProperties* prop)
+void CompositingLayer::updataDrawProp(DrawProps* prop)
 {
     m_prop->copy(*prop);
 }
@@ -204,7 +203,7 @@ SkColor CompositingLayer::getBackgroundColor() const
     return m_prop->backgroundColor;
 }
 
-void CompositingLayer::updataTile(int newIndexNumX, int newIndexNumY, DrawToCanvasProperties* prop)
+void CompositingLayer::updataTile(int newIndexNumX, int newIndexNumY, DrawProps* prop)
 {
     TilesAddr::realloByNewXY(&m_tilesAddr, newIndexNumX, newIndexNumY);
 
@@ -218,7 +217,8 @@ void CompositingLayer::cleanupUnnecessaryTile(const WTF::Vector<TileActionInfo*>
 {
     for (size_t i = 0; i < tiles.size(); ++i) {
         TileActionInfo* info = tiles[i];
-        CompositingTile* tile = (CompositingTile*)m_tilesAddr->getTileByXY(info->xIndex, info->yIndex, [] { return new CompositingTile(); });
+        SkColor color = m_prop->backgroundColor;
+        CompositingTile* tile = (CompositingTile*)m_tilesAddr->getTileByXY(info->xIndex, info->yIndex, [color] { return new CompositingTile(color); });
         ASSERT(tile == m_tilesAddr->getTileByIndex(info->index));        
         tile->clearBitmap();
         m_tilesAddr->remove(tile);
@@ -359,7 +359,8 @@ void CompositingLayer::blendToTiles(TileActionInfoVector* willRasteredTiles, con
     const Vector<TileActionInfo*>& infos = willRasteredTiles->infos();
     for (size_t i = 0; i < infos.size(); ++i) {
         TileActionInfo* info = infos[i];
-        CompositingTile* tile = (CompositingTile*)m_tilesAddr->getTileByXY(info->xIndex, info->yIndex, [] { return new CompositingTile(); });
+        SkColor color = m_prop->backgroundColor;
+        CompositingTile* tile = (CompositingTile*)m_tilesAddr->getTileByXY(info->xIndex, info->yIndex, [color] { return new CompositingTile(color); });
         ASSERT(tile == m_tilesAddr->getTileByIndex(info->index));
         blendToTile(tile, bitmap ? bitmap : info->m_bitmap, dirtyRect, info->m_solidColor, info->m_isSolidColorCoverWholeTile, contentScale);
     } 
@@ -425,6 +426,13 @@ void CompositingLayer::blendToTile(CompositingTile* tile, const SkBitmap* bitmap
 
 class DoClipLayer {
 public:
+    static bool needClipMaskLayer(CompositingLayer* maskLayer)
+    {
+        if (!maskLayer || !(maskLayer->drawsContent()))
+            return false;
+        return 0 != maskLayer->tilesSize();
+    }
+
     DoClipLayer(LayerTreeHost* host, CompositingLayer* layer, blink::WebCanvas* canvas, const SkRect& clip)
     {
         m_canvas = canvas;
@@ -443,7 +451,7 @@ public:
         m_maskLayer = nullptr;
         if (-1 != layer->m_prop->maskLayerId) {
             m_maskLayer = host->getCCLayerById(layer->m_prop->maskLayerId);
-            if (m_maskLayer) {
+            if (needClipMaskLayer(m_maskLayer)) {
                 needClip = true;
                 SkRect skMaskClipRect = SkRect::MakeXYWH(
                     m_maskLayer->m_prop->position.x(), 
@@ -453,6 +461,9 @@ public:
                 if (!skClipRect.intersect(skMaskClipRect))
                     skClipRect.setEmpty();
                 // TODO: SoftwareRenderer::DrawRenderPassQuad
+
+//                 String output = String::format("DoClipLayer: %d\n", layer->m_prop->maskLayerId);
+//                 OutputDebugStringA(output.utf8().data());
             }
         }
 
@@ -496,23 +507,18 @@ private:
     bool m_isClipChild;
 };
 
-bool CompositingLayer::drawToCanvasChildren(LayerTreeHost* host, SkCanvas* canvas, const SkRect& clip, int deep)
+bool CompositingLayer::drawToCanvasChildren(LayerTreeHost* host, SkCanvas* canvas, const SkRect& clip, float parentOpacity, int deep)
 {
     bool b = false;
     for (size_t i = 0; i < children().size(); ++i) {
         CompositingLayer* child = children()[i];
 
-        const SkMatrix44& currentTransform = child->drawToCanvasProperties()->currentTransform;
         const SkMatrix44& transformToAncestor = child->drawToCanvasProperties()->screenSpaceTransform;
 
         SkMatrix matrixToAncestor;
         transformToFlattenedSkMatrix(transformToAncestor, &matrixToAncestor);
 
-        if (opacity() < 1 && opacity() > 0) {
-            U8CPU opacityVal = (int)ceil(opacity() * 255);
-            canvas->saveLayerAlpha(nullptr, opacityVal);
-        } else
-            canvas->save();
+        canvas->save();
 
         SkPaint paint;
         paint.setAntiAlias(wke::g_rendererAntiAlias);
@@ -533,11 +539,11 @@ bool CompositingLayer::drawToCanvasChildren(LayerTreeHost* host, SkCanvas* canva
         DoClipLayer doClipLayer(host, child, canvas, clipInLayerdCoordinate);
 
         DoClipChileLayer doClipChileLayer(child, canvas);
-        b |= child->drawToCanvas(host, canvas, clipInLayerdCoordinateInt);
+        b |= child->drawToCanvas(host, canvas, clipInLayerdCoordinateInt, parentOpacity * opacity());
         doClipChileLayer.release();
 
         if (!child->opaque() || !child->masksToBounds() || !child->drawsContent())
-            b |= child->drawToCanvasChildren(host, canvas, clip, deep + 1);
+            b |= child->drawToCanvasChildren(host, canvas, clip, opacity(), deep + 1);
 
         canvas->resetMatrix();
         canvas->restore();
@@ -546,9 +552,9 @@ bool CompositingLayer::drawToCanvasChildren(LayerTreeHost* host, SkCanvas* canva
     return b;
 }
 
-bool CompositingLayer::drawToCanvas(LayerTreeHost* host, blink::WebCanvas* canvas, const blink::IntRect& clip)
+bool CompositingLayer::drawToCanvas(LayerTreeHost* host, blink::WebCanvas* canvas, const blink::IntRect& clip, float parentOpacity)
 {
-    U8CPU alphaVal = (int)ceil(opacity() * 255);
+    U8CPU alphaVal = (int)ceil(opacity() * parentOpacity * 255);
     if (layerShouldBeSkipped(this, true) || 0 == alphaVal)
         return false;
 
@@ -618,13 +624,17 @@ CompositingImageLayer::~CompositingImageLayer()
 	    m_bitmap->deref();
 }
 
-bool CompositingImageLayer::drawToCanvas(LayerTreeHost* host, blink::WebCanvas* canvas, const blink::IntRect& clip)
+bool CompositingImageLayer::drawToCanvas(LayerTreeHost* host, blink::WebCanvas* canvas, const blink::IntRect& clip, float parentOpacity)
 {
     if (!drawsContent() || !m_bitmap || !m_bitmap->get())
         return false;
 
+    SkPaint paint;
+    U8CPU alphaVal = (int)ceil(opacity() * parentOpacity * 255);
+    paint.setAlpha(alphaVal);
+
     SkRect dst = SkRect::MakeWH(m_prop->bounds.width(), m_prop->bounds.height());
-    canvas->drawBitmapRect(*m_bitmap->get(), dst, nullptr);
+    canvas->drawBitmapRect(*m_bitmap->get(), dst, &paint);
 
     return true;
 }
